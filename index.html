@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Smart Doormat - Bluetooth Control</title>
+<style>
+  body{font-family:Arial,sans-serif;background:#111;color:#eee;text-align:center;margin:0;padding:18px}
+  .card{background:#1e1e1e;border-radius:16px;padding:20px;max-width:380px;margin:auto}
+  h2{margin:4px 0 12px}
+  #conn{font-size:15px;color:#aaa;margin-bottom:10px}
+  #st{font-size:36px;font-weight:bold;margin:16px 0;color:#888}
+  .row{display:flex;justify-content:space-between;background:#2a2a2a;border-radius:8px;padding:10px 14px;margin:6px 0;font-size:17px}
+  button{font-size:20px;padding:14px;width:100%;margin-top:12px;border:0;border-radius:10px;color:#fff;cursor:pointer}
+  button:disabled{opacity:.4}
+  .c{background:#2980b9}.a{background:#c0392b}.d{background:#27ae60}
+  input{font-size:20px;padding:12px;width:100%;box-sizing:border-box;margin-top:14px;border-radius:10px;border:1px solid #444;background:#2a2a2a;color:#fff;text-align:center}
+  #log{margin-top:14px;font-size:14px;color:#bbb;text-align:left;max-height:140px;overflow-y:auto;background:#161616;border-radius:8px;padding:8px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Smart Anti-Theft Doormat</h2>
+  <div id="conn">Not connected</div>
+  <button class="c" id="btnConn" onclick="connect()">Connect via Bluetooth</button>
+
+  <div id="st">---</div>
+  <div class="row"><span>Mat</span><b id="mat">-</b></div>
+  <div class="row"><span>Intrusions</span><b id="cnt">-</b></div>
+  <div class="row"><span>Tamper wire</span><b id="tmp">-</b></div>
+
+  <input id="pin" type="password" inputmode="numeric" placeholder="PIN to disarm (1234)">
+  <button class="a" id="btnArm" onclick="send('ARM')" disabled>ARM</button>
+  <button class="d" id="btnDis" onclick="disarm()" disabled>DISARM / STOP ALARM</button>
+
+  <div id="log">Use Chrome on Android or PC. Turn on Bluetooth and Location.</div>
+</div>
+
+<script>
+const NUS = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RX  = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const TX  = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const colors = {'DISARMED':'#27ae60','ARMING':'#f39c12','ARMED':'#e67e22',
+                'ENTER CODE':'#f1c40f','INTRUDER!':'#e74c3c','TAMPER!':'#9b59b6'};
+let device = null, rx = null, buf = '';
+
+try { pin.value = localStorage.getItem('doormatPin') || ''; } catch (e) {}
+
+function log(t){
+  const time = new Date().toLocaleTimeString();
+  logEl.innerHTML = '<div>' + time + ' - ' + t + '</div>' + logEl.innerHTML;
+}
+const logEl = document.getElementById('log');
+
+function setConnected(on){
+  document.getElementById('conn').textContent = on ? 'Connected to ' + device.name : 'Not connected';
+  btnConn.textContent = on ? 'Disconnect' : 'Connect via Bluetooth';
+  btnConn.onclick = on ? () => device.gatt.disconnect() : connect;
+  btnArm.disabled = btnDis.disabled = !on;
+  if (!on) { st.textContent = '---'; st.style.color = '#888'; }
+}
+
+async function connect(){
+  if (!navigator.bluetooth){
+    alert('This browser has no Web Bluetooth. Use Chrome on Android or PC.');
+    return;
+  }
+  try {
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [NUS] }, { namePrefix: 'SmartDoormat' }],
+      optionalServices: [NUS]
+    });
+    device.addEventListener('gattserverdisconnected', () => { rx = null; setConnected(false); log('Disconnected'); });
+    const server = await device.gatt.connect();
+    const svc = await server.getPrimaryService(NUS);
+    rx = await svc.getCharacteristic(RX);
+    const tx = await svc.getCharacteristic(TX);
+    await tx.startNotifications();
+    tx.addEventListener('characteristicvaluechanged',
+      e => onData(new TextDecoder().decode(e.target.value)));
+    setConnected(true);
+    log('Connected');
+    send('STATUS');
+  } catch (e) {
+    log('Error: ' + e.message);
+  }
+}
+
+function onData(text){
+  buf += text;
+  let i;
+  while ((i = buf.indexOf('\n')) >= 0){
+    const line = buf.slice(0, i).trim();
+    buf = buf.slice(i + 1);
+    if (line) handleLine(line);
+  }
+}
+
+function handleLine(line){
+  const p = line.split('|').map(s => s.trim());
+  if (p.length >= 4){
+    st.textContent = p[0];
+    st.style.color = colors[p[0]] || '#fff';
+    mat.textContent = p[1].split(':')[1];
+    cnt.textContent = p[2].split(':')[1];
+    tmp.textContent = p[3].split(':')[1];
+    if (p[0] === 'INTRUDER!' && navigator.vibrate) navigator.vibrate([400, 200, 400]);
+  } else {
+    log(line);
+  }
+}
+
+async function send(cmd){
+  if (!rx){ log('Not connected'); return; }
+  try {
+    await rx.writeValue(new TextEncoder().encode(cmd + '\n'));
+  } catch (e) {
+    log('Send failed: ' + e.message);
+  }
+}
+
+function disarm(){
+  if (!pin.value){ alert('Enter the PIN first'); return; }
+  try { localStorage.setItem('doormatPin', pin.value); } catch (e) {}
+  send('DISARM ' + pin.value);
+}
+</script>
+</body>
+</html>
